@@ -1,0 +1,11 @@
+Package: mjpg-streamer
+Version: r182-8
+Depends: libc, libpthread, libjpeg
+Source: feeds/packages/multimedia/mjpg-streamer
+License: GPL-2.0
+LicenseFiles: LICENSE
+Section: multimedia
+Maintainer: Roger D <rogerdammit@gmail.com>
+Architecture: ramips_24kec
+Installed-Size: 30677
+Description:  Streaming application for Linux-UVC compatible webcams
