@@ -22,12 +22,10 @@
 
 /*
   This output plugin is based on code from output_file.c
-  Writen by Dimitrios Zachariadis
-  Version 0.1, May 2010
+  Writen by  Hanchao Leng
+  Version 0.1, Aug 2016
 
-  It provides a mechanism to take snapshots with a trigger from a UDP packet.
-  The UDP msg contains the path for the snapshot jpeg file
-  It echoes the message received back to the sender, after taking the snapshot
+  Send frame to tcp server,one signal one frame.
 */
 
 #include <stdio.h>
@@ -60,25 +58,20 @@
 #include "../../utils.h"
 #include "../../mjpg_streamer.h"
 
-#define OUTPUT_PLUGIN_NAME "UDP output plugin"
-
-enum RTSP_State {
-    RTSP_State_Setup,
-    RTSP_State_Playing,
-    RTSP_State_Paused,
-    RTSP_State_Teardown,
-};
+#define OUTPUT_PLUGIN_NAME "TCP output plugin"
 
 static pthread_t worker;
 static globals *pglobal;
-static int fd, delay, max_frame_size;
-static char *folder = "/tmp";
+static int max_frame_size;
 static unsigned char *frame = NULL;
-static char *command = NULL;
 static int input_number = 0;
 
-// UDP port
-static int port = 0;
+//TCP socket fd
+int sock_client_tcp = -1;
+// TCP server port
+static int port = 3538;
+//TCP server ip
+static char *ip = "127.0.0.1";
 
 /******************************************************************************
 Description.: print a help message
@@ -91,10 +84,8 @@ void help(void)
             " Help for output plugin..: "OUTPUT_PLUGIN_NAME"\n" \
             " ---------------------------------------------------------------\n" \
             " The following parameters can be passed to this plugin:\n\n" \
-            " [-f | --folder ]........: folder to save pictures\n" \
-            " [-d | --delay ].........: delay after saving pictures in ms\n" \
-            " [-c | --command ].......: execute command after saveing picture\n" \
-            " [-p | --port ]..........: UDP port to listen for picture requests. UDP message is the filename to save\n\n" \
+            " [-s | --ip ]........: TCP server ip address\n" \
+            " [-p | --port ]..........: TCP server  port\n\n" \
             " [-i | --input ].......: read frames from the specified input plugin (first input plugin between the arguments is the 0th)\n\n" \
             " ---------------------------------------------------------------\n");
 }
@@ -119,12 +110,9 @@ void worker_cleanup(void *arg)
     if(frame != NULL) {
         free(frame);
     }
-    close(fd);
-
 
 }
 
-int sock_client_tcp = -1;
 /**
  * @brief tcp连接操作
  * @param ser_ip
@@ -170,16 +158,21 @@ int client_tcp_send(unsigned char *databuf,int len)
     printf("len = %d ; ",len);
     if (write(sock_client_tcp,&len,sizeof(int)) == -1)
     {
-        perror("tcp发送失败");
+        perror("tcp LEN发送失败");
         return -1;
     }
     //send databuf secondly
     if (write(sock_client_tcp,databuf,len) == -1)
     {
-        perror("tcp发送失败");
+        perror("tcp DATA发送失败");
         return -1;
     }
     printf("data[last] = %d\n",databuf[len-1]);
+    if (read(sock_client_tcp,&len,sizeof(int)) <=0 )
+    {
+        perror("接收ACK失败");
+        return -1;
+    }
     return 0;
 }
 /**
@@ -190,7 +183,7 @@ int client_tcp_destory()
 {
     close(sock_client_tcp);
     sock_client_tcp = -1;
-    printf("tcp dectory \n!");
+    printf("tcp dectory!\n");
     return 0;
 }
 /******************************************************************************
@@ -201,35 +194,15 @@ Return Value:
 ******************************************************************************/
 void *worker_thread(void *arg)
 {
-    int ok = 1, frame_size = 0, rc = 0;
-    char buffer1[1024] = {0};
+    int frame_size = 0;
     unsigned char *tmp_framebuffer = NULL;
 
     /* set cleanup handler to cleanup allocated ressources */
     pthread_cleanup_push(worker_cleanup, NULL);
+    //连接TCP服务器
+    client_tcp_init(ip,port);
 
-    // set UDP server data structures ---------------------------
-    if(port <= 0) {
-        OPRINT("a valid UDP port must be provided\n");
-        return NULL;
-    }
-    struct sockaddr_in addr;
-    int sd;
-    int bytes;
-    unsigned int addr_len = sizeof(addr);
-    char udpbuffer[1024] = {0};
-    sd = socket(PF_INET, SOCK_DGRAM, 0);
-    bzero(&addr, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(port);
-    if(bind(sd, (struct sockaddr*)&addr, sizeof(addr)) != 0)
-        perror("bind");
-    // -----------------------------------------------------------
-    client_tcp_init("127.0.0.1",3538);
-
-    while(ok >= 0 && !pglobal->stop) {
-        DBG("waiting for a UDP message\n");
+    while(!pglobal->stop) {
 
         DBG("waiting for fresh frame\n");
         pthread_mutex_lock(&pglobal->in[input_number].db);
@@ -237,7 +210,6 @@ void *worker_thread(void *arg)
 
         /* read buffer */
         frame_size = pglobal->in[input_number].size;
-        printf("frame_size=%d",frame_size);
 
         /* check if buffer for frame is large enough, increase it if necessary */
         if(frame_size > max_frame_size) {
@@ -259,48 +231,17 @@ void *worker_thread(void *arg)
         /* allow others to access the global buffer again */
         pthread_mutex_unlock(&pglobal->in[input_number].db);
 
-        /* only save a file if a name came in with the UDP message */
-        if(strlen(udpbuffer) > 0) {
-            DBG("writing file: %s\n", udpbuffer);
+        //send frame to tcp server
+        if (client_tcp_send(frame,frame_size) < 0)
+            break;
 
-
-
-        }
-
-        client_tcp_send(frame,frame_size);
-
-        /* call the command if user specified one, pass current filename as argument */
-        if(command != NULL) {
-            memset(buffer1, 0, sizeof(buffer1));
-
-            /* udpbuffer still contains the filename, pass it to the command as parameter */
-            snprintf(buffer1, sizeof(buffer1), "%s \"%s\"", command, udpbuffer);
-            DBG("calling command %s", buffer1);
-
-            /* in addition provide the filename as environment variable */
-            if((rc = setenv("MJPG_FILE", udpbuffer, 1)) != 0) {
-                LOG("setenv failed (return value %d)\n", rc);
-            }
-
-            /* execute the command now */
-            if((rc = system(buffer1)) != 0) {
-                LOG("command failed (return value %d)\n", rc);
-            }
-        }
-
-        /* if specified, wait now */
-        if(delay > 0) {
-            usleep(1000 * delay);
-        }
     }
-
-    // close UDP port
-    if(port > 0)
-        close(sd);
+    //close tcp socket
+    client_tcp_destory();
 
     /* cleanup now */
     pthread_cleanup_pop(1);
-    client_tcp_destory();
+
     return NULL;
 }
 
@@ -315,8 +256,6 @@ int output_init(output_parameter *param)
 {
     int i;
 
-    delay = 0;
-
     param->argv[0] = OUTPUT_PLUGIN_NAME;
 
     /* show all parameters for DBG purposes */
@@ -328,15 +267,10 @@ int output_init(output_parameter *param)
     while(1) {
         int option_index = 0, c = 0;
         static struct option long_options[] = {
-            {"h", no_argument, 0, 0
-            },
+            {"h", no_argument, 0, 0},
             {"help", no_argument, 0, 0},
-            {"f", required_argument, 0, 0},
-            {"folder", required_argument, 0, 0},
-            {"d", required_argument, 0, 0},
-            {"delay", required_argument, 0, 0},
-            {"c", required_argument, 0, 0},
-            {"command", required_argument, 0, 0},
+            {"s", required_argument, 0, 0},
+            {"serverip", required_argument, 0, 0},
             {"p", required_argument, 0, 0},
             {"port", required_argument, 0, 0},
             {"i", required_argument, 0, 0},
@@ -364,39 +298,24 @@ int output_init(output_parameter *param)
             return 1;
             break;
 
-            /* f, folder */
+            /* s, serverip */
         case 2:
         case 3:
             DBG("case 2,3\n");
-            folder = malloc(strlen(optarg) + 1);
-            strcpy(folder, optarg);
-            if(folder[strlen(folder)-1] == '/')
-                folder[strlen(folder)-1] = '\0';
+                ip = malloc(strlen(optarg) + 1);
+                strcpy(ip, optarg);
             break;
 
-            /* d, delay */
+            /* p, port */
         case 4:
         case 5:
             DBG("case 4,5\n");
-            delay = atoi(optarg);
-            break;
-
-            /* c, command */
-        case 6:
-        case 7:
-            DBG("case 6,7\n");
-            command = strdup(optarg);
-            break;
-            /* p, port */
-        case 8:
-        case 9:
-            DBG("case 8,9\n");
             port = atoi(optarg);
             break;
             /* i, input */
-        case 10:
-        case 11:
-            DBG("case 10,11\n");
+        case 6:
+        case 7:
+            DBG("case 6,7\n");
             input_number = atoi(optarg);
             break;
         }
@@ -408,14 +327,8 @@ int output_init(output_parameter *param)
         return 1;
     }
     OPRINT("input plugin.....: %d: %s\n", input_number, pglobal->in[input_number].plugin);
-    OPRINT("output folder.....: %s\n", folder);
-    OPRINT("delay after save..: %d\n", delay);
-    OPRINT("command...........: %s\n", (command == NULL) ? "disabled" : command);
-    if(port > 0) {
-        OPRINT("UDP port..........: %d\n", port);
-    } else {
-        OPRINT("UDP port..........: %s\n", "disabled");
-    }
+    OPRINT("output server ip.....: %s\n", ip);
+    OPRINT("output server port..: %d\n", port);
     return 0;
 }
 
