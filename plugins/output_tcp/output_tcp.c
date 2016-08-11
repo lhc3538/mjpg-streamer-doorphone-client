@@ -111,6 +111,9 @@ void worker_cleanup(void *arg)
         free(frame);
     }
 
+    //close tcp socket
+    client_tcp_destory();
+
 }
 
 /**
@@ -236,8 +239,6 @@ void *worker_thread(void *arg)
             break;
 
     }
-    //close tcp socket
-    client_tcp_destory();
 
     /* cleanup now */
     pthread_cleanup_pop(1);

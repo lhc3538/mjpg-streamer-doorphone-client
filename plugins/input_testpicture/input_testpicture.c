@@ -37,6 +37,10 @@
 #include <linux/types.h>          /* for videodev2.h */
 #include <linux/videodev2.h>
 
+#include<netinet/in.h>
+#include<arpa/inet.h>
+#include<sys/wait.h>
+
 #include "../../mjpg_streamer.h"
 #include "../../utils.h"
 
@@ -288,26 +292,120 @@ Return Value: NULL
 ******************************************************************************/
 void *worker_thread(void *arg)
 {
-    int i = 0;
+    int sockfd,new_fd;
+    struct sockaddr_in my_addr; /* 本机地址信息 */
+    struct sockaddr_in their_addr; /* 客户地址信息 */
+    unsigned int sin_size, myport, lisnum;
+
+    unsigned char *databuf;
+    databuf = (unsigned char*)malloc(sizeof(char));
+    //接收数据长度
+    int len;
+    //实际接受长度
+    int accept_len;
+    int rul;
+
+    myport = 3538;
+
+    lisnum = 2;
+
+    if ((sockfd = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
+        perror("socket");
+        exit(1);
+    }
+    printf("socket %d ok \n",myport);
+
+    my_addr.sin_family=PF_INET;
+    my_addr.sin_port=htons(myport);
+    my_addr.sin_addr.s_addr = INADDR_ANY;
+    bzero(&(my_addr.sin_zero), 0);
+    if (bind(sockfd, (struct sockaddr *)&my_addr, sizeof(struct sockaddr)) == -1) {
+        perror("bind");
+        exit(1);
+    }
+    printf("bind ok \n");
+
+    if (listen(sockfd, lisnum) == -1) {
+        perror("listen");
+        exit(1);
+    }
+    printf("listen ok \n");
+
+    sin_size = sizeof(struct sockaddr_in);
 
     /* set cleanup handler to cleanup allocated ressources */
     pthread_cleanup_push(worker_cleanup, NULL);
 
-    while(!pglobal->stop) {
+    while(!pglobal->stop)
+    {
+        if ((new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size)) == -1) {
+            perror("accept");
+            exit(0);
+        }
+        printf("server: got connection from %s\n",inet_ntoa(their_addr.sin_addr));
 
-        /* copy JPG picture to global buffer */
-        pthread_mutex_lock(&pglobal->in[plugin_number].db);
+        rul = 1;
+        while (rul > 0)
+        {
+            //接收长度数据
+            accept_len = 0;
+            while(1)
+            {
+                rul = read(new_fd,&len+accept_len,sizeof(int)-accept_len) ;
+                if(rul <= 0)
+                {
+                    perror("tcp接收长度数据失败");
+                    break;
+                }
+                accept_len += rul;
+                if (accept_len == sizeof(int))
+                    break;
+            }
+            printf("len = %d ; ",len);
+            //按照接收到的长度分配内存
+            databuf = (unsigned char*)realloc(databuf,sizeof(char)*len);
+            if (databuf == NULL)
+            {
+                perror("malloc failed");
+                break;
+            }
+            //接收数据
+            accept_len = 0;
+            while(1)
+            {
+                rul = read(new_fd,databuf+accept_len,len-accept_len) ;
+                if(rul<= 0)
+                {
+                    perror("tcp接收数据失败");
+                    break;
+                }
+                accept_len += rul;
+                if (accept_len == len)
+                    break;
+            }
+            printf("data[last] = %d\n",databuf[len-1]);
+            /* copy JPG picture to global buffer */
+            pthread_mutex_lock(&pglobal->in[plugin_number].db);
 
-        i = (i + 1) % LENGTH_OF(pics->sequence);
-        pglobal->in[plugin_number].size = pics->sequence[i].size;
-        memcpy(pglobal->in[plugin_number].buf, pics->sequence[i].data, pglobal->in[plugin_number].size);
+            pglobal->in[plugin_number].size = len;
+            memcpy(pglobal->in[plugin_number].buf, databuf, pglobal->in[plugin_number].size);
 
-        /* signal fresh_frame */
-        pthread_cond_broadcast(&pglobal->in[plugin_number].db_update);
-        pthread_mutex_unlock(&pglobal->in[plugin_number].db);
+            /* signal fresh_frame */
+            pthread_cond_broadcast(&pglobal->in[plugin_number].db_update);
+            pthread_mutex_unlock(&pglobal->in[plugin_number].db);
 
-        usleep(1000 * delay);
+            //发送ACK
+            if (write(new_fd,&len,sizeof(int)) == -1)
+            {
+                perror("发送ACK失败");
+                break;
+            }
+        }
+        close(new_fd);
     }
+
+    free(databuf);
+    databuf = NULL;
 
     IPRINT("leaving input thread, calling cleanup function now\n");
     pthread_cleanup_pop(1);
