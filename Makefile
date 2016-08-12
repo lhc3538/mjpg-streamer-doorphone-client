@@ -37,7 +37,8 @@ PLUGINS = input_uvc.so
 #PLUGINS += output_udp.so
 PLUGINS += output_tcp.so
 PLUGINS += output_http.so
-PLUGINS += input_testpicture.so
+PLUGINS += input_tcp.so
+#PLUGINS += input_testpicture.so
 #PLUGINS += output_autofocus.so
 #PLUGINS += input_file.so
 # PLUGINS += input_pylon.so
@@ -68,10 +69,13 @@ output_autofocus.so: mjpg_streamer.h utils.h
 	make -C plugins/output_autofocus all
 	cp plugins/output_autofocus/output_autofocus.so .
 
+input_tcp.so: mjpg_streamer.h utils.h
+	make -C plugins/input_tcp all
+	cp plugins/input_tcp/input_tcp.so .
+
 input_testpicture.so: mjpg_streamer.h utils.h
 	make -C plugins/input_testpicture all
 	cp plugins/input_testpicture/input_testpicture.so .
-
 
 ifeq ($(USE_LIBV4L2),true)
 input_uvc.so: mjpg_streamer.h utils.h
@@ -145,6 +149,7 @@ output_viewer.so: mjpg_streamer.h utils.h
 # cleanup
 clean:
 	make -C plugins/input_uvc $@
+	make -C plugins/input_tcp $@
 	make -C plugins/input_testpicture $@
 	make -C plugins/output_file $@
 	make -C plugins/output_tcp $@

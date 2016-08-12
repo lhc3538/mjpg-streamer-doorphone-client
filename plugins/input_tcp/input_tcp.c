@@ -37,12 +37,14 @@
 #include <linux/types.h>          /* for videodev2.h */
 #include <linux/videodev2.h>
 
+#include<netinet/in.h>
+#include<arpa/inet.h>
+#include<sys/wait.h>
+
 #include "../../mjpg_streamer.h"
 #include "../../utils.h"
 
-#include "testpictures.h"
-
-#define INPUT_PLUGIN_NAME "TESTPICTURE input plugin"
+#define INPUT_PLUGIN_NAME "TCP input plugin"
 
 /* private functions and variables to this plugin */
 static pthread_t   worker;
@@ -54,27 +56,8 @@ void *worker_thread(void *);
 void worker_cleanup(void *);
 void help(void);
 
-static int delay = 1000;
-
-/* details of converted JPG pictures */
-struct pic {
-    const unsigned char *data;
-    const int size;
-};
-
-/* lookup pictures by resolution */
-#define ENTRY(res, pic1, pic2) { res, { { pic1, sizeof(pic1) }, { pic2, sizeof(pic2) } } }
-static struct pictures {
-    const char *resolution;
-    struct pic sequence[2];
-} picture_lookup[] = {
-    ENTRY("960x720", PIC_960x720_1, PIC_960x720_2),
-    ENTRY("640x480", PIC_640x480_1, PIC_640x480_2),
-    ENTRY("320x240", PIC_320x240_1, PIC_320x240_2),
-    ENTRY("160x120", PIC_160x120_1, PIC_160x120_2)
-};
-
-struct pictures *pics;
+static int delay = 100;
+static int port = 3538;
 
 /*** plugin interface functions ***/
 
@@ -86,8 +69,6 @@ Return Value: 0 if everything is ok
 int input_init(input_parameter *param, int id)
 {
     int i;
-
-    pics = &picture_lookup[1];
 
     if(pthread_mutex_init(&controls_mutex, NULL) != 0) {
         IPRINT("could not initialize mutex variable\n");
@@ -107,13 +88,12 @@ int input_init(input_parameter *param, int id)
     while(1) {
         int option_index = 0, c = 0;
         static struct option long_options[] = {
-            {"h", no_argument, 0, 0
-            },
+            {"h", no_argument, 0, 0 },
             {"help", no_argument, 0, 0},
             {"d", required_argument, 0, 0},
             {"delay", required_argument, 0, 0},
-            {"r", required_argument, 0, 0},
-            {"resolution", required_argument, 0, 0},
+            {"p", required_argument, 0, 0},
+            {"port", required_argument, 0, 0},
             {0, 0, 0, 0}
         };
 
@@ -144,16 +124,11 @@ int input_init(input_parameter *param, int id)
             delay = atoi(optarg);
             break;
 
-            /* r, resolution */
+            /* p, port */
         case 4:
         case 5:
             DBG("case 4,5\n");
-            for(i = 0; i < LENGTH_OF(picture_lookup); i++) {
-                if(strcmp(picture_lookup[i].resolution, optarg) == 0) {
-                    pics = &picture_lookup[i];
-                    break;
-                }
-            }
+            port = atoi(optarg);
             break;
 
         default:
@@ -166,65 +141,7 @@ int input_init(input_parameter *param, int id)
     pglobal = param->global;
 
     IPRINT("delay.............: %i\n", delay);
-    IPRINT("resolution........: %s\n", pics->resolution);
-
-    // add some dummy controls
-    pglobal->in[id].parametercount = 3;
-    pglobal->in[id].in_parameters = (control*)calloc(3, sizeof(control));
-
-    /*
-     *struct v4l2_queryctrl ctrl;
-    int value;
-    struct v4l2_querymenu *menuitems;
-        In the case the control a V4L2 ctrl this variable will specify
-        that the control is a V4L2_CTRL_CLASS_USER control or not.
-        For non V4L2 control it is not acceptable, leave it 0.
-
-    int class_id;
-    int group;*/
-    /*
-       Used in the VIDIOC_QUERYCTRL ioctl for querying controls *
-            struct v4l2_queryctrl {
-                __u32		     id;
-                __u32		     type;
-                __u8		     name[32];
-                __s32		     minimum;
-                __s32		     maximum;
-                __s32		     step;
-                __s32		     default_value;
-                __u32                flags;
-                __u32		     reserved[2];
-            };
-     */
-    pglobal->in[id].in_parameters[0].ctrl.id = 120;
-    pglobal->in[id].in_parameters[0].ctrl.type = V4L2_CTRL_TYPE_INTEGER;
-    sprintf((char*)pglobal->in[id].in_parameters[0].ctrl.name, "Foo integer control");
-    pglobal->in[id].in_parameters[0].value = 100;
-    pglobal->in[id].in_parameters[0].ctrl.minimum = 0;
-    pglobal->in[id].in_parameters[0].ctrl.maximum = 512;
-    pglobal->in[id].in_parameters[0].ctrl.step = 1;
-    pglobal->in[id].in_parameters[0].ctrl.default_value = 12;
-
-    // add pan and tilt
-    pglobal->in[id].in_parameters[1].ctrl.id = V4L2_CID_PAN_RELATIVE;
-    pglobal->in[id].in_parameters[1].ctrl.type = V4L2_CTRL_TYPE_INTEGER;
-    sprintf((char*)pglobal->in[id].in_parameters[1].ctrl.name, "Pan test Ctrl");
-    pglobal->in[id].in_parameters[1].value = 0;
-    pglobal->in[id].in_parameters[1].group = 1;
-    pglobal->in[id].in_parameters[1].ctrl.minimum = 0;
-    pglobal->in[id].in_parameters[1].ctrl.maximum = 1024;
-    pglobal->in[id].in_parameters[1].ctrl.step = 1;
-    pglobal->in[id].in_parameters[1].ctrl.default_value = 0;
-
-    pglobal->in[id].in_parameters[2].ctrl.id = V4L2_CID_TILT_RELATIVE;
-    pglobal->in[id].in_parameters[2].ctrl.type = V4L2_CTRL_TYPE_INTEGER;
-    sprintf((char*)pglobal->in[id].in_parameters[2].ctrl.name, "Tilt test Ctrl");
-    pglobal->in[id].in_parameters[2].value = 0;
-    pglobal->in[id].in_parameters[2].group = 1;
-    pglobal->in[id].in_parameters[2].ctrl.minimum = 0;
-    pglobal->in[id].in_parameters[2].ctrl.maximum = 1024;
-    pglobal->in[id].in_parameters[2].ctrl.step = 1;
-    pglobal->in[id].in_parameters[2].ctrl.default_value = 0;
+    IPRINT("listen port........: %d\n", port);
     return 0;
 }
 
@@ -248,11 +165,6 @@ Return Value: 0
 ******************************************************************************/
 int input_run(int id)
 {
-    pglobal->in[id].buf = malloc(256 * 1024);
-    if(pglobal->in[id].buf == NULL) {
-        fprintf(stderr, "could not allocate memory\n");
-        exit(EXIT_FAILURE);
-    }
 
     if(pthread_create(&worker, 0, worker_thread, NULL) != 0) {
         free(pglobal->in[id].buf);
@@ -276,38 +188,128 @@ void help(void)
     " ---------------------------------------------------------------\n" \
     " The following parameters can be passed to this plugin:\n\n" \
     " [-d | --delay ]........: delay to pause between frames\n" \
-    " [-r | --resolution]....: can be 960x720, 640x480, 320x240, 160x120\n"
+    " [-p | --port]....: tcp server listen port\n"
     " ---------------------------------------------------------------\n");
 }
 
 /******************************************************************************
-Description.: copy a picture from testpictures.h and signal this to all output
-              plugins, afterwards switch to the next frame of the animation.
+Description.: recv frame from output_tcp client
 Input Value.: arg is not used
 Return Value: NULL
 ******************************************************************************/
 void *worker_thread(void *arg)
 {
-    int i = 0;
+    int sockfd,new_fd;
+    struct sockaddr_in my_addr; /* 本机地址信息 */
+    struct sockaddr_in their_addr; /* 客户地址信息 */
+    unsigned int sin_size, lisnum;
+
+    unsigned char *databuf;
+    databuf = (unsigned char*)malloc(sizeof(char));
+    //接收数据长度
+    int len;
+    //实际接受长度
+    int accept_len;
+    int rul;
+
+    lisnum = 2;
+
+    if ((sockfd = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
+        perror("socket");
+        exit(1);
+    }
+    printf("socket %d ok \n",port);
+
+    my_addr.sin_family=PF_INET;
+    my_addr.sin_port=htons(port);
+    my_addr.sin_addr.s_addr = INADDR_ANY;
+    bzero(&(my_addr.sin_zero), 0);
+    if (bind(sockfd, (struct sockaddr *)&my_addr, sizeof(struct sockaddr)) == -1) {
+        perror("bind");
+        exit(1);
+    }
+    printf("bind ok \n");
+
+    if (listen(sockfd, lisnum) == -1) {
+        perror("listen");
+        exit(1);
+    }
+    printf("listen ok \n");
+
+    sin_size = sizeof(struct sockaddr_in);
 
     /* set cleanup handler to cleanup allocated ressources */
     pthread_cleanup_push(worker_cleanup, NULL);
 
-    while(!pglobal->stop) {
+    while(!pglobal->stop)
+    {
+        if ((new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size)) == -1) {
+            perror("accept");
+            exit(0);
+        }
+        printf("server: got connection from %s\n",inet_ntoa(their_addr.sin_addr));
 
-        /* copy JPG picture to global buffer */
-        pthread_mutex_lock(&pglobal->in[plugin_number].db);
+        rul = 1;
+        while (rul > 0)
+        {
+            //接收长度数据
+            accept_len = 0;
+            while(1)
+            {
+                rul = read(new_fd,&len+accept_len,sizeof(int)-accept_len) ;
+                if(rul <= 0)
+                {
+                    perror("tcp接收长度数据失败");
+                    break;
+                }
+                accept_len += rul;
+                if (accept_len == sizeof(int))
+                    break;
+            }
+            printf("len = %d ; ",len);
+            //按照接收到的长度分配内存
+            databuf = (unsigned char*)realloc(databuf,sizeof(char)*len);
+            if (databuf == NULL)
+            {
+                perror("malloc failed");
+                break;
+            }
+            //接收数据
+            accept_len = 0;
+            while(1)
+            {
+                rul = read(new_fd,databuf+accept_len,len-accept_len) ;
+                if(rul<= 0)
+                {
+                    perror("tcp接收数据失败");
+                    break;
+                }
+                accept_len += rul;
+                if (accept_len == len)
+                    break;
+            }
+            printf("data[last] = %d\n",databuf[len-1]);
+            /* copy JPG picture to global buffer */
+            pthread_mutex_lock(&pglobal->in[plugin_number].db);
 
-        i = (i + 1) % LENGTH_OF(pics->sequence);
-        pglobal->in[plugin_number].size = pics->sequence[i].size;
-        memcpy(pglobal->in[plugin_number].buf, pics->sequence[i].data, pglobal->in[plugin_number].size);
+            pglobal->in[plugin_number].size = len;
+            pglobal->in[plugin_number].buf =  databuf;
 
-        /* signal fresh_frame */
-        pthread_cond_broadcast(&pglobal->in[plugin_number].db_update);
-        pthread_mutex_unlock(&pglobal->in[plugin_number].db);
+            /* signal fresh_frame */
+            pthread_cond_broadcast(&pglobal->in[plugin_number].db_update);
+            pthread_mutex_unlock(&pglobal->in[plugin_number].db);
 
-        usleep(1000 * delay);
+            //发送ACK
+            if (write(new_fd,&len,sizeof(int)) == -1)
+            {
+                perror("发送ACK失败");
+                break;
+            }
+        }
+        close(new_fd);
     }
+
+    databuf = NULL;
 
     IPRINT("leaving input thread, calling cleanup function now\n");
     pthread_cleanup_pop(1);
@@ -332,7 +334,8 @@ void worker_cleanup(void *arg)
     first_run = 0;
     DBG("cleaning up ressources allocated by input thread\n");
 
-    if(pglobal->in[plugin_number].buf != NULL) free(pglobal->in[plugin_number].buf);
+    if(pglobal->in[plugin_number].buf != NULL)
+        free(pglobal->in[plugin_number].buf);
 }
 
 /******************************************************************************
