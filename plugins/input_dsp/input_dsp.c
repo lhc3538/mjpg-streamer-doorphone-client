@@ -34,6 +34,9 @@
 #include <pthread.h>
 #include <syslog.h>
 
+#include <fcntl.h>
+#include <linux/soundcard.h>
+
 #include <linux/types.h>          /* for videodev2.h */
 #include <linux/videodev2.h>
 
@@ -46,6 +49,7 @@
 
 #define INPUT_PLUGIN_NAME "TCP input plugin"
 
+#define BUFLEN 1024
 /* private functions and variables to this plugin */
 static pthread_t   worker;
 static globals     *pglobal;
@@ -56,9 +60,51 @@ void *worker_thread(void *);
 void worker_cleanup(void *);
 void help(void);
 
-static int delay = 100;
-static int port = 3538;
+int m_rate = 22050,
+    m_bits = 16,
+    m_channels = 2;
 
+int fd_audio;
+int  audio_init(int rate,int size,int channels)
+{
+    int arg;	// 用于ioctl调用的参数
+    int rul = 0;   // 系统调用的返回值
+    // 打开声音设备
+    fd_audio = open("/dev/dsp", O_RDWR);
+    if (fd_audio < 0)
+    {
+        perror("open of /dev/dsp failed");
+        return -1;
+    }
+    // 设置采样时的量化位数
+    arg = size;
+    rul = ioctl(fd_audio, SOUND_PCM_WRITE_BITS, &arg);
+    if (rul == -1)
+        perror("SOUND_PCM_WRITE_BITS ioctl failed");
+    if (arg != size)
+        perror("unable to set sample size");
+    // 设置采样时的声道数目
+    arg = channels;
+    rul = ioctl(fd_audio, SOUND_PCM_WRITE_CHANNELS, &arg);
+    if (rul == -1)
+        perror("SOUND_PCM_WRITE_CHANNELS ioctl failed");
+    if (arg != channels)
+        perror("unable to set number of channels");
+    // 设置采样时的采样频率
+    arg = rate;
+    rul = ioctl(fd_audio, SOUND_PCM_WRITE_RATE, &arg);
+    if (rul == -1)
+        perror("SOUND_PCM_WRITE_WRITE ioctl failed");
+    return rul;
+}
+int audio_read(unsigned char *databuf)
+{
+    int rul;
+    rul = read(fd_audio, databuf, BUFLEN); // 录音
+    if (rul != BUFLEN)
+        perror("read wrong number of bytes");
+    return rul;
+}
 /*** plugin interface functions ***/
 
 /******************************************************************************
@@ -69,7 +115,6 @@ Return Value: 0 if everything is ok
 int input_init(input_parameter *param, int id)
 {
     int i;
-
     if(pthread_mutex_init(&controls_mutex, NULL) != 0) {
         IPRINT("could not initialize mutex variable\n");
         exit(EXIT_FAILURE);
@@ -90,10 +135,12 @@ int input_init(input_parameter *param, int id)
         static struct option long_options[] = {
             {"h", no_argument, 0, 0 },
             {"help", no_argument, 0, 0},
-            {"d", required_argument, 0, 0},
-            {"delay", required_argument, 0, 0},
-            {"p", required_argument, 0, 0},
-            {"port", required_argument, 0, 0},
+            {"b", required_argument, 0, 0},
+            {"bits", required_argument, 0, 0},
+            {"r", required_argument, 0, 0},
+            {"rate", required_argument, 0, 0},
+            {"c", required_argument, 0, 0},
+            {"channels", required_argument, 0, 0},
             {0, 0, 0, 0}
         };
 
@@ -117,18 +164,25 @@ int input_init(input_parameter *param, int id)
             return 1;
             break;
 
-            /* d, delay */
+            /* b, bits */
         case 2:
         case 3:
             DBG("case 2,3\n");
-            delay = atoi(optarg);
+            m_bits = atoi(optarg);
             break;
 
-            /* p, port */
+            /* r, rate*/
         case 4:
         case 5:
             DBG("case 4,5\n");
-            port = atoi(optarg);
+            m_rate = atoi(optarg);
+            break;
+
+            /* c, channels*/
+        case 6:
+        case 7:
+            DBG("case 4,5\n");
+            m_channels = atoi(optarg);
             break;
 
         default:
@@ -140,8 +194,9 @@ int input_init(input_parameter *param, int id)
 
     pglobal = param->global;
 
-    IPRINT("delay.............: %i\n", delay);
-    IPRINT("listen port........: %d\n", port);
+    IPRINT("sampling frequency.............: %d\n", m_rate);
+    IPRINT("sample bits........: %d\n", m_bits);
+    IPRINT("channels........: %d\n", m_channels);
     return 0;
 }
 
@@ -187,8 +242,9 @@ void help(void)
     " Help for input plugin..: "INPUT_PLUGIN_NAME"\n" \
     " ---------------------------------------------------------------\n" \
     " The following parameters can be passed to this plugin:\n\n" \
-    " [-d | --delay ]........: delay to pause between frames\n" \
-    " [-p | --port]....: tcp server listen port\n"
+    " [-r | --rate ]........: delay to pause between frames\n" \
+    " [-b | --bits ]....: tcp server listen port\n"\
+    " [-c | --channels ]....: tcp server listen port\n"\
     " ---------------------------------------------------------------\n");
 }
 
@@ -199,116 +255,32 @@ Return Value: NULL
 ******************************************************************************/
 void *worker_thread(void *arg)
 {
-    int sockfd,new_fd;
-    struct sockaddr_in my_addr; /* 本机地址信息 */
-    struct sockaddr_in their_addr; /* 客户地址信息 */
-    unsigned int sin_size, lisnum;
 
     unsigned char *databuf;
-    databuf = (unsigned char*)malloc(sizeof(char));
-    //接收数据长度
-    int len;
-    //实际接受长度
-    int accept_len;
-    int rul;
+    databuf = (unsigned char*) malloc(sizeof(unsigned char)*BUFLEN);
 
-    lisnum = 2;
-
-    if ((sockfd = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
-        perror("socket");
-        exit(1);
-    }
-    printf("socket %d ok \n",port);
-
-    my_addr.sin_family=PF_INET;
-    my_addr.sin_port=htons(port);
-    my_addr.sin_addr.s_addr = INADDR_ANY;
-    bzero(&(my_addr.sin_zero), 0);
-    if (bind(sockfd, (struct sockaddr *)&my_addr, sizeof(struct sockaddr)) == -1) {
-        perror("bind");
-        exit(1);
-    }
-    printf("bind ok \n");
-
-    if (listen(sockfd, lisnum) == -1) {
-        perror("listen");
-        exit(1);
-    }
-    printf("listen ok \n");
-
-    sin_size = sizeof(struct sockaddr_in);
+    audio_init(m_rate,m_bits,m_channels);
 
     /* set cleanup handler to cleanup allocated ressources */
     pthread_cleanup_push(worker_cleanup, NULL);
 
     while(!pglobal->stop)
     {
-        if ((new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size)) == -1) {
-            perror("accept");
-            exit(0);
-        }
-        printf("server: got connection from %s\n",inet_ntoa(their_addr.sin_addr));
 
-        rul = 1;
-        while (rul > 0)
-        {
-            //接收长度数据
-            accept_len = 0;
-            while(1)
-            {
-                rul = read(new_fd,&len+accept_len,sizeof(int)-accept_len) ;
-                if(rul <= 0)
-                {
-                    perror("tcp接收长度数据失败");
-                    break;
-                }
-                accept_len += rul;
-                if (accept_len == sizeof(int))
-                    break;
-            }
-            printf("len = %d ; ",len);
-            //按照接收到的长度分配内存
-            databuf = (unsigned char*)realloc(databuf,sizeof(char)*len);
-            if (databuf == NULL)
-            {
-                perror("malloc failed");
-                break;
-            }
-            //接收数据
-            accept_len = 0;
-            while(1)
-            {
-                rul = read(new_fd,databuf+accept_len,len-accept_len) ;
-                if(rul<= 0)
-                {
-                    perror("tcp接收数据失败");
-                    break;
-                }
-                accept_len += rul;
-                if (accept_len == len)
-                    break;
-            }
-            printf("data[last] = %d\n",databuf[len-1]);
-            /* copy JPG picture to global buffer */
-            pthread_mutex_lock(&pglobal->in[plugin_number].db);
+        audio_read(databuf);
+        printf("data[0] = %d\n",databuf[0]);
+        /* copy JPG picture to global buffer */
+        pthread_mutex_lock(&pglobal->in[plugin_number].db);
 
-            pglobal->in[plugin_number].size = len;
-            pglobal->in[plugin_number].buf =  databuf;
+        pglobal->in[plugin_number].size = BUFLEN;
+        pglobal->in[plugin_number].buf =  databuf;
 
-            /* signal fresh_frame */
-            pthread_cond_broadcast(&pglobal->in[plugin_number].db_update);
-            pthread_mutex_unlock(&pglobal->in[plugin_number].db);
+        /* signal fresh_frame */
+        pthread_cond_broadcast(&pglobal->in[plugin_number].db_update);
+        pthread_mutex_unlock(&pglobal->in[plugin_number].db);
 
-            //发送ACK
-            if (write(new_fd,&len,sizeof(int)) == -1)
-            {
-                perror("发送ACK失败");
-                break;
-            }
-        }
-        close(new_fd);
     }
-
+    close(fd_audio);
     databuf = NULL;
 
     IPRINT("leaving input thread, calling cleanup function now\n");

@@ -32,12 +32,12 @@ LFLAGS += -lpthread -ldl
 APP_BINARY = mjpg_streamer
 
 # define the names and targets of the plugins
-PLUGINS = input_uvc.so
+#PLUGINS = input_uvc.so
 #PLUGINS += output_file.so
 #PLUGINS += output_udp.so
-PLUGINS += output_tcp.so
+#PLUGINS += output_tcp.so
 PLUGINS += output_http.so
-PLUGINS += input_tcp.so
+PLUGINS += input_dsp.so
 #PLUGINS += input_testpicture.so
 #PLUGINS += output_autofocus.so
 #PLUGINS += input_file.so
@@ -46,7 +46,7 @@ PLUGINS += input_tcp.so
 # PLUGINS += output_mars2020.so
 # PLUGINS += output_rtsp.so
 # PLUGINS += input_ptp2.so # commented out because it depends on libgphoto
-#PLUGINS += input_http.so 
+# PLUGINS += input_http.so 
 # PLUGINS += output_viewer.so # commented out because it depends on SDL
 
 # define the names of object files
@@ -69,9 +69,9 @@ output_autofocus.so: mjpg_streamer.h utils.h
 	make -C plugins/output_autofocus all
 	cp plugins/output_autofocus/output_autofocus.so .
 
-input_tcp.so: mjpg_streamer.h utils.h
-	make -C plugins/input_tcp all
-	cp plugins/input_tcp/input_tcp.so .
+input_dsp.so: mjpg_streamer.h utils.h
+	make -C plugins/input_dsp all
+	cp plugins/input_dsp/input_dsp.so .
 
 input_testpicture.so: mjpg_streamer.h utils.h
 	make -C plugins/input_testpicture all
@@ -149,7 +149,7 @@ output_viewer.so: mjpg_streamer.h utils.h
 # cleanup
 clean:
 	make -C plugins/input_uvc $@
-	make -C plugins/input_tcp $@
+	make -C plugins/input_dsp $@
 	make -C plugins/input_testpicture $@
 	make -C plugins/output_file $@
 	make -C plugins/output_tcp $@

@@ -28,3 +28,4 @@ ipkg-ramips_24kec/mjpg-streamer/usr/lib
 plugins/output_tcp/examples
 plugins/input_uvc
 plugins/input_tcp
+plugins/input_dsp

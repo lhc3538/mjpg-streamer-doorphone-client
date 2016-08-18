@@ -15,7 +15,7 @@ CFLAGS += -O2 -DLINUX -D_GNU_SOURCE -Wall -shared -fPIC
 #CFLAGS += -DDEBUG
 LFLAGS += -lpthread -ldl
 
-all: input_tcp.so
+all: input_dsp.so
 
 clean:
 	rm -f *.a *.o core *~ *.so *.lo
@@ -26,6 +26,6 @@ clean:
 #  * convert (ImageMagick)
 #  * od, sed, tr
 
-input_tcp.so: $(OTHER_HEADERS) input_tcp.c
-	$(CC) $(CFLAGS) -o $@ input_tcp.c
+input_dsp.so: $(OTHER_HEADERS) input_dsp.c
+	$(CC) $(CFLAGS) -o $@ input_dsp.c
 
